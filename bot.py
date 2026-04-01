@@ -35,6 +35,21 @@ async def on_ready():
         print(f"Failed to sync commands: {e}")
 
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    print(f"Command error: {error}")
+    if isinstance(error, discord.app_commands.CheckFailure):
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "You don't have permission to use this command.", ephemeral=True,
+            )
+    else:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                f"An error occurred: {error}", ephemeral=True,
+            )
+
+
 async def load_extensions():
     cog_files = ["cogs.events", "cogs.signups", "cogs.reminders"]
     for cog in cog_files:
