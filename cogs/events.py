@@ -282,6 +282,32 @@ class EventsCog(commands.Cog):
                 f"Error setting up sheets: {e}", ephemeral=True,
             )
 
+    @app_commands.command(name="add-signup-channel", description="Allow signups in this channel (Admin only)")
+    @is_admin()
+    async def add_signup_channel(self, interaction: discord.Interaction):
+        success = sheets.add_signup_channel(interaction.channel_id)
+        if success:
+            await interaction.response.send_message(
+                f"This channel is now a signup channel.",
+            )
+        else:
+            await interaction.response.send_message(
+                "This channel is already a signup channel.", ephemeral=True,
+            )
+
+    @app_commands.command(name="remove-signup-channel", description="Remove this channel from signup channels (Admin only)")
+    @is_admin()
+    async def remove_signup_channel(self, interaction: discord.Interaction):
+        success = sheets.remove_signup_channel(interaction.channel_id)
+        if success:
+            await interaction.response.send_message(
+                f"This channel is no longer a signup channel.",
+            )
+        else:
+            await interaction.response.send_message(
+                "This channel isn't a signup channel.", ephemeral=True,
+            )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(EventsCog(bot))

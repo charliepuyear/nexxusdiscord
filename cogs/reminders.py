@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import discord
 from discord.ext import commands, tasks
-from config import SIGNUP_CHANNEL_ID
 import sheets
 
 
@@ -19,11 +18,13 @@ class RemindersCog(commands.Cog):
     @tasks.loop(minutes=30)
     async def check_deadlines(self):
         """Check for approaching deadlines and auto-close expired events."""
-        if not SIGNUP_CHANNEL_ID:
+        channel_ids = sheets.get_signup_channels()
+        if not channel_ids:
             return
 
-        channel = self.bot.get_channel(SIGNUP_CHANNEL_ID)
-        if not channel:
+        channels = [self.bot.get_channel(ch) for ch in channel_ids]
+        channels = [ch for ch in channels if ch is not None]
+        if not channels:
             return
 
         now = datetime.utcnow()
@@ -53,7 +54,8 @@ class RemindersCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-                await channel.send(embed=embed)
+                for channel in channels:
+                    await channel.send(embed=embed)
                 continue
 
             # 24-hour reminder
@@ -69,7 +71,8 @@ class RemindersCog(commands.Cog):
                     ),
                     color=discord.Color.orange(),
                 )
-                await channel.send(embed=embed)
+                for channel in channels:
+                    await channel.send(embed=embed)
 
             # 1-hour reminder
             elif timedelta(minutes=30) <= time_left <= timedelta(hours=1, minutes=30):
@@ -83,7 +86,8 @@ class RemindersCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-                await channel.send(embed=embed)
+                for channel in channels:
+                    await channel.send(embed=embed)
 
     @check_deadlines.before_loop
     async def before_check_deadlines(self):

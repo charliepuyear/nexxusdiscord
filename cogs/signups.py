@@ -6,16 +6,18 @@ import csv
 import discord
 from discord import app_commands
 from discord.ext import commands
-from config import SIGNUP_CHANNEL_ID, ADMIN_ROLE
+from config import ADMIN_ROLE
 import sheets
 
 
 def in_signup_channel():
-    """Check that commands are used in the designated signup channel."""
+    """Check that commands are used in a designated signup channel."""
     async def predicate(interaction: discord.Interaction) -> bool:
-        if SIGNUP_CHANNEL_ID and interaction.channel_id != SIGNUP_CHANNEL_ID:
+        allowed = sheets.get_signup_channels()
+        if allowed and interaction.channel_id not in allowed:
+            channel_mentions = ", ".join(f"<#{ch}>" for ch in allowed)
             await interaction.response.send_message(
-                f"This command can only be used in <#{SIGNUP_CHANNEL_ID}>.",
+                f"This command can only be used in: {channel_mentions}",
                 ephemeral=True,
             )
             return False
@@ -29,6 +31,46 @@ def is_admin():
             return any(role.name == ADMIN_ROLE for role in interaction.user.roles)
         return False
     return app_commands.check(predicate)
+
+
+# ── Role helpers ──
+
+
+async def _assign_event_role(interaction: discord.Interaction, event_name: str):
+    """Create an event role if needed and assign it to the user."""
+    guild = interaction.guild
+    if not guild:
+        return
+    role_name = f"Event: {event_name}"
+    role = discord.utils.get(guild.roles, name=role_name)
+    if not role:
+        try:
+            role = await guild.create_role(
+                name=role_name,
+                mentionable=True,
+                reason=f"Auto-created for race event: {event_name}",
+            )
+        except discord.Forbidden:
+            print(f"Missing permissions to create role: {role_name}")
+            return
+    try:
+        await interaction.user.add_roles(role, reason=f"Signed up for {event_name}")
+    except discord.Forbidden:
+        print(f"Missing permissions to assign role: {role_name}")
+
+
+async def _remove_event_role(interaction: discord.Interaction, event_name: str):
+    """Remove the event role from the user."""
+    guild = interaction.guild
+    if not guild:
+        return
+    role_name = f"Event: {event_name}"
+    role = discord.utils.get(guild.roles, name=role_name)
+    if role and role in interaction.user.roles:
+        try:
+            await interaction.user.remove_roles(role, reason=f"Cancelled signup for {event_name}")
+        except discord.Forbidden:
+            print(f"Missing permissions to remove role: {role_name}")
 
 
 # ── Step 1: Select event via dropdown ──
@@ -124,31 +166,31 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
         timeslots = event["Timeslots"]
 
         self.primary_class = discord.ui.TextInput(
-            label=f"Primary Class ({classes})",
-            placeholder=f"Choose from: {classes}",
+            label="Primary Class",
+            placeholder=f"Choose from: {classes}"[:100],
             max_length=100,
         )
         self.secondary_class = discord.ui.TextInput(
-            label=f"Secondary Class (optional)",
-            placeholder=f"Choose from: {classes}",
+            label="Secondary Class (optional)",
+            placeholder=f"Choose from: {classes}"[:100],
             required=False,
             max_length=100,
         )
         self.cars_input = discord.ui.TextInput(
             label="Car(s) you want to drive",
-            placeholder=f"Available: {cars}",
+            placeholder=f"Available: {cars}"[:100],
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
         self.available_slots = discord.ui.TextInput(
-            label=f"Available timeslots",
-            placeholder=f"Slots: {timeslots}",
+            label="Available timeslots",
+            placeholder=f"Slots: {timeslots}"[:100],
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
         self.preferred_slot = discord.ui.TextInput(
             label="Preferred timeslot",
-            placeholder=f"Your top pick from: {timeslots}",
+            placeholder=f"Your top pick from: {timeslots}"[:100],
             max_length=200,
         )
 
@@ -162,7 +204,7 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
         try:
             success = sheets.add_signup(
                 event_name=self.event_name,
-                discord_user=str(interaction.user),
+                discord_user=interaction.user.display_name,
                 discord_id=str(interaction.user.id),
                 primary_class=self.primary_class.value.strip(),
                 secondary_class=self.secondary_class.value.strip() if self.secondary_class.value else "None",
@@ -182,6 +224,9 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
                 ephemeral=True,
             )
             return
+
+        # Auto-assign event role
+        await _assign_event_role(interaction, self.event_name)
 
         embed = discord.Embed(
             title="Signup Confirmed!",
@@ -210,24 +255,28 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
         timeslots = event["Timeslots"]
 
         self.primary_class = discord.ui.TextInput(
-            label=f"Primary Class ({classes})",
+            label="Primary Class",
+            placeholder=f"Choose from: {classes}"[:100],
             default=str(existing["Primary Class"]),
             max_length=100,
         )
         self.secondary_class = discord.ui.TextInput(
-            label=f"Secondary Class (optional)",
+            label="Secondary Class (optional)",
+            placeholder=f"Choose from: {classes}"[:100],
             default=str(existing["Secondary Class"]),
             required=False,
             max_length=100,
         )
         self.cars_input = discord.ui.TextInput(
             label="Car(s) you want to drive",
+            placeholder=f"Available: {cars}"[:100],
             default=str(existing["Cars"]),
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
         self.available_slots = discord.ui.TextInput(
-            label=f"Available timeslots ({timeslots})",
+            label="Available timeslots",
+            placeholder=f"Slots: {timeslots}"[:100],
             default=str(existing["Available Timeslots"]),
             style=discord.TextStyle.paragraph,
             max_length=500,
@@ -292,6 +341,7 @@ class ConfirmCancelView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         success = sheets.cancel_signup(self.event_name, str(interaction.user.id))
         if success:
+            await _remove_event_role(interaction, self.event_name)
             await interaction.response.edit_message(
                 content=f"Your signup for **{self.event_name}** has been cancelled.",
                 view=None,

@@ -37,7 +37,7 @@ def get_spreadsheet() -> gspread.Spreadsheet:
 
 
 def ensure_worksheets():
-    """Create the Events and Signups worksheets if they don't exist."""
+    """Create the Events, Signups, and Config worksheets if they don't exist."""
     spreadsheet = get_spreadsheet()
     existing = [ws.title for ws in spreadsheet.worksheets()]
 
@@ -49,6 +49,11 @@ def ensure_worksheets():
     if "Signups" not in existing:
         ws = spreadsheet.add_worksheet(title="Signups", rows=1000, cols=len(SIGNUP_HEADERS))
         ws.append_row(SIGNUP_HEADERS)
+        ws.format("1", {"textFormat": {"bold": True}})
+
+    if "Config" not in existing:
+        ws = spreadsheet.add_worksheet(title="Config", rows=50, cols=2)
+        ws.append_row(["Key", "Value"])
         ws.format("1", {"textFormat": {"bold": True}})
 
     # Remove default Sheet1 if our sheets exist
@@ -265,3 +270,57 @@ def get_user_signup_for_event(event_name: str, discord_id: str) -> dict | None:
         if record["Event Name"] == event_name and str(record["Discord ID"]) == str(discord_id):
             return record
     return None
+
+
+# ── Channel management ──
+
+
+def get_signup_channels() -> list[int]:
+    """Get list of allowed signup channel IDs from Config sheet."""
+    try:
+        spreadsheet = get_spreadsheet()
+        ws = spreadsheet.worksheet("Config")
+        records = ws.get_all_records()
+        for record in records:
+            if record["Key"] == "signup_channels":
+                value = str(record["Value"]).strip()
+                if not value:
+                    return []
+                return [int(ch.strip()) for ch in value.split(",") if ch.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def add_signup_channel(channel_id: int) -> bool:
+    """Add a channel to the allowed signup channels list."""
+    channels = get_signup_channels()
+    if channel_id in channels:
+        return False
+    channels.append(channel_id)
+    _save_signup_channels(channels)
+    return True
+
+
+def remove_signup_channel(channel_id: int) -> bool:
+    """Remove a channel from the allowed signup channels list."""
+    channels = get_signup_channels()
+    if channel_id not in channels:
+        return False
+    channels.remove(channel_id)
+    _save_signup_channels(channels)
+    return True
+
+
+def _save_signup_channels(channels: list[int]):
+    """Save the signup channels list to the Config sheet."""
+    spreadsheet = get_spreadsheet()
+    ws = spreadsheet.worksheet("Config")
+    records = ws.get_all_records()
+    value = ", ".join(str(ch) for ch in channels)
+    for i, record in enumerate(records):
+        if record["Key"] == "signup_channels":
+            ws.update_cell(i + 2, 2, value)
+            return
+    # Key doesn't exist yet, add it
+    ws.append_row(["signup_channels", value])
