@@ -1,4 +1,5 @@
 """Admin commands for managing race events."""
+from __future__ import annotations
 
 import discord
 from discord import app_commands

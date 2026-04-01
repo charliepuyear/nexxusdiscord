@@ -1,4 +1,5 @@
 """Signup commands — users sign up, edit, cancel, and view race signups."""
+from __future__ import annotations
 
 import io
 import csv

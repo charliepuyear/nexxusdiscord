@@ -1,4 +1,5 @@
 """Google Sheets integration for storing events and signups."""
+from __future__ import annotations
 
 import gspread
 from google.oauth2.service_account import Credentials
