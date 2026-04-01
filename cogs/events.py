@@ -203,14 +203,6 @@ class EventsCog(commands.Cog):
     async def close_event(self, interaction: discord.Interaction, event_name: str):
         success = sheets.close_event(event_name)
         if success:
-            # Remove the event role from the server
-            role_name = f"Event: {event_name}"
-            role = discord.utils.get(interaction.guild.roles, name=role_name)
-            if role:
-                try:
-                    await role.delete(reason=f"Event closed: {event_name}")
-                except discord.Forbidden:
-                    pass
             embed = discord.Embed(
                 title="Event Closed",
                 description=f"Signups for **{event_name}** are now closed.",
