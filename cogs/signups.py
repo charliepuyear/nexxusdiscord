@@ -118,7 +118,6 @@ class EventSelect(discord.ui.Select):
             return
 
         if self.mode == "signup":
-            # Check if already signed up
             existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
             if existing:
                 await interaction.response.send_message(
@@ -127,7 +126,12 @@ class EventSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(SignupModal(event))
+            # Step 2: Show timeslot selection
+            view = TimeslotSelectView(event, interaction.user.id, mode="signup")
+            await interaction.response.edit_message(
+                content=f"**{event_name}** — Select your available timeslots:",
+                view=view,
+            )
 
         elif self.mode == "edit":
             existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
@@ -137,7 +141,11 @@ class EventSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(EditSignupModal(event, existing))
+            view = TimeslotSelectView(event, interaction.user.id, mode="edit", existing=existing)
+            await interaction.response.edit_message(
+                content=f"**{event_name}** — Update your available timeslots:",
+                view=view,
+            )
 
         elif self.mode == "cancel":
             existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
@@ -147,23 +155,122 @@ class EventSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_message(
-                f"Are you sure you want to cancel your signup for **{event_name}**?",
+            await interaction.response.edit_message(
+                content=f"Are you sure you want to cancel your signup for **{event_name}**?",
                 view=ConfirmCancelView(event_name, interaction.user.id),
-                ephemeral=True,
             )
 
 
-# ── Step 2: Signup modal ──
+# ── Step 2: Timeslot selection via dropdowns ──
+
+
+class TimeslotSelectView(discord.ui.View):
+    """Multi-select for available timeslots + single-select for preferred."""
+
+    def __init__(self, event: dict, user_id: int, mode: str = "signup", existing: dict = None):
+        super().__init__(timeout=180)
+        self.event = event
+        self.user_id = user_id
+        self.mode = mode
+        self.existing = existing
+        self.selected_available = []
+        self.selected_preferred = None
+
+        timeslot_strs = [s.strip() for s in str(event["Timeslots"]).split(",") if s.strip()]
+
+        # Figure out which slots were previously selected (for edit mode)
+        prev_available = []
+        if existing:
+            prev_available = [s.strip() for s in str(existing["Available Timeslots"]).split(",") if s.strip()]
+
+        # Multi-select for available timeslots
+        available_options = []
+        for slot in timeslot_strs:
+            opt = discord.SelectOption(label=slot, value=slot)
+            if slot in prev_available:
+                opt.default = True
+            available_options.append(opt)
+
+        self.available_select = discord.ui.Select(
+            placeholder="Select ALL timeslots you're available for...",
+            min_values=1,
+            max_values=len(timeslot_strs),
+            options=available_options,
+            row=0,
+        )
+        self.available_select.callback = self.on_available_select
+        self.add_item(self.available_select)
+
+        # Single-select for preferred timeslot
+        preferred_options = [discord.SelectOption(label=slot, value=slot) for slot in timeslot_strs]
+        self.preferred_select = discord.ui.Select(
+            placeholder="Select your PREFERRED timeslot...",
+            min_values=1,
+            max_values=1,
+            options=preferred_options,
+            row=1,
+        )
+        self.preferred_select.callback = self.on_preferred_select
+        self.add_item(self.preferred_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This isn't your signup flow.", ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_available_select(self, interaction: discord.Interaction):
+        self.selected_available = self.available_select.values
+        if self.selected_preferred:
+            await self._proceed(interaction)
+        else:
+            await interaction.response.edit_message(
+                content=f"**{self.event['Event Name']}** — Available: {', '.join(self.selected_available)}\nNow select your **preferred** timeslot:",
+                view=self,
+            )
+
+    async def on_preferred_select(self, interaction: discord.Interaction):
+        self.selected_preferred = self.preferred_select.values[0]
+        if self.selected_available:
+            await self._proceed(interaction)
+        else:
+            await interaction.response.edit_message(
+                content=f"**{self.event['Event Name']}** — Preferred: {self.selected_preferred}\nNow select **all timeslots you're available** for:",
+                view=self,
+            )
+
+    async def _proceed(self, interaction: discord.Interaction):
+        """Both selects are done — open the class/car modal."""
+        if self.mode == "signup":
+            modal = SignupModal(
+                self.event,
+                available_timeslots=", ".join(self.selected_available),
+                preferred_timeslot=self.selected_preferred,
+            )
+            await interaction.response.send_modal(modal)
+        elif self.mode == "edit":
+            modal = EditSignupModal(
+                self.event,
+                self.existing,
+                available_timeslots=", ".join(self.selected_available),
+                preferred_timeslot=self.selected_preferred,
+            )
+            await interaction.response.send_modal(modal)
+
+
+# ── Step 3: Class/Car modal ──
 
 
 class SignupModal(discord.ui.Modal, title="Race Signup"):
-    def __init__(self, event: dict):
+    def __init__(self, event: dict, available_timeslots: str, preferred_timeslot: str):
         super().__init__()
         self.event_name = event["Event Name"]
+        self.available_timeslots = available_timeslots
+        self.preferred_timeslot = preferred_timeslot
         classes = event["Classes"]
         cars = event["Cars"]
-        timeslots = event["Timeslots"]
 
         self.primary_class = discord.ui.TextInput(
             label="Primary Class",
@@ -182,23 +289,10 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
-        self.available_slots = discord.ui.TextInput(
-            label="Available timeslots",
-            placeholder=f"Slots: {timeslots}"[:100],
-            style=discord.TextStyle.paragraph,
-            max_length=500,
-        )
-        self.preferred_slot = discord.ui.TextInput(
-            label="Preferred timeslot",
-            placeholder=f"Your top pick from: {timeslots}"[:100],
-            max_length=200,
-        )
 
         self.add_item(self.primary_class)
         self.add_item(self.secondary_class)
         self.add_item(self.cars_input)
-        self.add_item(self.available_slots)
-        self.add_item(self.preferred_slot)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -209,8 +303,8 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
                 primary_class=self.primary_class.value.strip(),
                 secondary_class=self.secondary_class.value.strip() if self.secondary_class.value else "None",
                 cars=self.cars_input.value.strip(),
-                available_timeslots=self.available_slots.value.strip(),
-                preferred_timeslot=self.preferred_slot.value.strip(),
+                available_timeslots=self.available_timeslots,
+                preferred_timeslot=self.preferred_timeslot,
             )
         except Exception as e:
             await interaction.response.send_message(
@@ -237,8 +331,8 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
         if self.secondary_class.value:
             embed.add_field(name="Secondary Class", value=self.secondary_class.value, inline=True)
         embed.add_field(name="Car(s)", value=self.cars_input.value, inline=False)
-        embed.add_field(name="Available Slots", value=self.available_slots.value, inline=False)
-        embed.add_field(name="Preferred Slot", value=self.preferred_slot.value, inline=True)
+        embed.add_field(name="Available Slots", value=self.available_timeslots, inline=False)
+        embed.add_field(name="Preferred Slot", value=self.preferred_timeslot, inline=True)
 
         await interaction.response.send_message(embed=embed)
 
@@ -247,12 +341,13 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
 
 
 class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
-    def __init__(self, event: dict, existing: dict):
+    def __init__(self, event: dict, existing: dict, available_timeslots: str, preferred_timeslot: str):
         super().__init__()
         self.event_name = event["Event Name"]
+        self.available_timeslots = available_timeslots
+        self.preferred_timeslot = preferred_timeslot
         classes = event["Classes"]
         cars = event["Cars"]
-        timeslots = event["Timeslots"]
 
         self.primary_class = discord.ui.TextInput(
             label="Primary Class",
@@ -274,24 +369,10 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
-        self.available_slots = discord.ui.TextInput(
-            label="Available timeslots",
-            placeholder=f"Slots: {timeslots}"[:100],
-            default=str(existing["Available Timeslots"]),
-            style=discord.TextStyle.paragraph,
-            max_length=500,
-        )
-        self.preferred_slot = discord.ui.TextInput(
-            label="Preferred timeslot",
-            default=str(existing["Preferred Timeslot"]),
-            max_length=200,
-        )
 
         self.add_item(self.primary_class)
         self.add_item(self.secondary_class)
         self.add_item(self.cars_input)
-        self.add_item(self.available_slots)
-        self.add_item(self.preferred_slot)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -301,8 +382,8 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
                 primary_class=self.primary_class.value.strip(),
                 secondary_class=self.secondary_class.value.strip() if self.secondary_class.value else "None",
                 cars=self.cars_input.value.strip(),
-                available_timeslots=self.available_slots.value.strip(),
-                preferred_timeslot=self.preferred_slot.value.strip(),
+                available_timeslots=self.available_timeslots,
+                preferred_timeslot=self.preferred_timeslot,
             )
         except Exception as e:
             await interaction.response.send_message(
@@ -319,8 +400,8 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
         if self.secondary_class.value:
             embed.add_field(name="Secondary Class", value=self.secondary_class.value, inline=True)
         embed.add_field(name="Car(s)", value=self.cars_input.value, inline=False)
-        embed.add_field(name="Available Slots", value=self.available_slots.value, inline=False)
-        embed.add_field(name="Preferred Slot", value=self.preferred_slot.value, inline=True)
+        embed.add_field(name="Available Slots", value=self.available_timeslots, inline=False)
+        embed.add_field(name="Preferred Slot", value=self.preferred_timeslot, inline=True)
 
         await interaction.response.send_message(embed=embed)
 
@@ -387,7 +468,6 @@ class SignupsCog(commands.Cog):
     @app_commands.command(name="edit-signup", description="Edit your existing signup")
     @in_signup_channel()
     async def edit_signup(self, interaction: discord.Interaction):
-        # Show only events the user has signed up for
         user_signups = sheets.get_user_signups(str(interaction.user.id))
         if not user_signups:
             await interaction.response.send_message(
@@ -395,7 +475,6 @@ class SignupsCog(commands.Cog):
             )
             return
 
-        # Build event list from user's signups, only open events
         open_events = sheets.get_open_events()
         open_event_names = {e["Event Name"] for e in open_events}
         signed_up_events = [
@@ -515,7 +594,6 @@ class SignupsCog(commands.Cog):
             )
             return
 
-        # Build CSV in memory
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=sheets.SIGNUP_HEADERS)
         writer.writeheader()
