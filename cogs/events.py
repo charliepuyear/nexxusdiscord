@@ -40,7 +40,7 @@ class CreateEventModal(discord.ui.Modal, title="Create Race Event"):
         max_length=1000,
     )
     timeslots = discord.ui.TextInput(
-        label="Timeslots (comma-separated, or leave for defaults)",
+        label="Timeslots (blank for defaults)",
         placeholder="e.g., Slot 1 - Fri Eve, Slot 2 - Sat Morn",
         style=discord.TextStyle.paragraph,
         required=False,
