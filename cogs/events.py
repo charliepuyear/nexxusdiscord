@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
-from config import ADMIN_ROLE, SIGNUP_CHANNEL_ID, DEFAULT_TIMESLOTS
+from config import ADMIN_ROLE, DEFAULT_TIMESLOTS
 import sheets
 
 
