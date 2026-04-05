@@ -12,8 +12,6 @@ GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 ADMIN_ROLE = os.environ.get("ADMIN_ROLE", "Mods")
 
-# Debug: print whether token was found (without revealing it)
-print(f"DISCORD_TOKEN loaded: {DISCORD_TOKEN is not None}")
 
 # Default timeslots — admins can override per event
 DEFAULT_TIMESLOTS = [
