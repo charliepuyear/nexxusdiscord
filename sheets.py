@@ -1,6 +1,8 @@
 """Google Sheets integration for storing events and signups."""
 from __future__ import annotations
 
+import json
+import os
 import gspread
 from google.oauth2.service_account import Credentials
 from config import GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS_FILE
@@ -23,10 +25,19 @@ SIGNUP_HEADERS = [
 
 
 def get_client() -> gspread.Client:
-    """Authenticate and return a gspread client."""
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
-    )
+    """Authenticate and return a gspread client.
+
+    Supports either a credentials JSON file or a GOOGLE_CREDENTIALS_JSON
+    environment variable containing the JSON string directly.
+    """
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if creds_json:
+        info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(
+            GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
+        )
     return gspread.authorize(creds)
 
 
