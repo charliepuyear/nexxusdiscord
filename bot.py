@@ -1,7 +1,13 @@
 import asyncio
+import os
 import discord
 from discord.ext import commands
 from config import DISCORD_TOKEN
+
+# Debug: check all env vars
+print(f"DEBUG: DISCORD_TOKEN from os.environ: {os.environ.get('DISCORD_TOKEN') is not None}")
+print(f"DEBUG: DISCORD_TOKEN from config: {DISCORD_TOKEN is not None}")
+print(f"DEBUG: All env var keys: {[k for k in os.environ.keys() if not k.startswith('_')]}")
 
 intents = discord.Intents.default()
 intents.message_content = True
