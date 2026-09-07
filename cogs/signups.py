@@ -200,17 +200,27 @@ class TimeslotSelectView(discord.ui.View):
         self.selected_available = []
         self.selected_preferred = None
 
-        timeslot_strs = [s.strip() for s in str(event["Timeslots"]).split(",") if s.strip()]
+        raw_timeslots = event.get("Timeslots", "")
+        print(f"DEBUG timeslots raw value: type={type(raw_timeslots).__name__}, repr={repr(raw_timeslots)}")
+        # gspread may return int 0 for empty cells — always convert to string
+        raw_str = str(raw_timeslots).strip()
+        # Filter out empty strings and "0" (gspread empty cell artifact)
+        timeslot_strs = [s.strip()[:100] for s in raw_str.split(",") if s.strip() and s.strip() != "0"]
+
+        if not timeslot_strs:
+            # Fallback to default timeslots if none found
+            from config import DEFAULT_TIMESLOTS
+            timeslot_strs = DEFAULT_TIMESLOTS
 
         # Figure out which slots were previously selected (for edit mode)
         prev_available = []
         if existing:
-            prev_available = [s.strip() for s in str(existing["Available Timeslots"]).split(",") if s.strip()]
+            prev_available = [s.strip() for s in str(existing.get("Available Timeslots", "")).split(",") if s.strip()]
 
         # Multi-select for available timeslots
         available_options = []
         for slot in timeslot_strs:
-            opt = discord.SelectOption(label=slot, value=slot)
+            opt = discord.SelectOption(label=slot[:100], value=slot[:100])
             if slot in prev_available:
                 opt.default = True
             available_options.append(opt)
@@ -226,7 +236,7 @@ class TimeslotSelectView(discord.ui.View):
         self.add_item(self.available_select)
 
         # Single-select for preferred timeslot
-        preferred_options = [discord.SelectOption(label=slot, value=slot) for slot in timeslot_strs]
+        preferred_options = [discord.SelectOption(label=slot[:100], value=slot[:100]) for slot in timeslot_strs]
         self.preferred_select = discord.ui.Select(
             placeholder="Select your PREFERRED timeslot...",
             min_values=1,
