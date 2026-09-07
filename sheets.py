@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import gspread
 from google.oauth2.service_account import Credentials
 from config import GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS_FILE
@@ -61,6 +62,37 @@ def _refresh_client():
     global _client
     _client = None
     return get_client()
+
+
+# ── Simple in-memory cache ──
+
+_cache: dict[str, tuple[float, object]] = {}
+_CACHE_TTL = 30  # seconds
+
+
+def _cache_get(key: str):
+    """Get a value from cache if it exists and isn't expired."""
+    if key in _cache:
+        ts, value = _cache[key]
+        if time.time() - ts < _CACHE_TTL:
+            return value
+        del _cache[key]
+    return None
+
+
+def _cache_set(key: str, value: object):
+    """Store a value in cache."""
+    _cache[key] = (time.time(), value)
+
+
+def _cache_invalidate(prefix: str = ""):
+    """Clear cache entries matching a prefix, or all if empty."""
+    if not prefix:
+        _cache.clear()
+    else:
+        keys_to_delete = [k for k in _cache if k.startswith(prefix)]
+        for k in keys_to_delete:
+            del _cache[k]
 
 
 def _safe_spreadsheet() -> gspread.Spreadsheet:
@@ -128,14 +160,25 @@ def add_event(name: str, classes: list[str], cars: list[str],
         created_by,
         datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
     ])
+    _cache_invalidate("events:")
     return True
+
+
+def _get_all_event_records() -> list[dict]:
+    """Fetch all event records, with caching."""
+    cached = _cache_get("events:all")
+    if cached is not None:
+        return cached
+    spreadsheet = _safe_spreadsheet()
+    ws = spreadsheet.worksheet("Events")
+    records = ws.get_all_records()
+    _cache_set("events:all", records)
+    return records
 
 
 def get_event(name: str) -> dict | None:
     """Get an event by name."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Events")
-    records = ws.get_all_records()
+    records = _get_all_event_records()
     for record in records:
         if record["Event Name"] == name:
             return record
@@ -144,17 +187,13 @@ def get_event(name: str) -> dict | None:
 
 def get_open_events() -> list[dict]:
     """Get all events with status 'Open'."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Events")
-    records = ws.get_all_records()
+    records = _get_all_event_records()
     return [r for r in records if r["Status"] == "Open"]
 
 
 def get_all_events() -> list[dict]:
     """Get all events."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Events")
-    return ws.get_all_records()
+    return _get_all_event_records()
 
 
 def close_event(name: str) -> bool:
@@ -165,6 +204,7 @@ def close_event(name: str) -> bool:
     for i, event_name in enumerate(events):
         if event_name == name:
             ws.update_cell(i + 1, 6, "Closed")  # Column 6 = Status
+            _cache_invalidate("events:")
             return True
     return False
 
@@ -193,6 +233,8 @@ def delete_event(name: str) -> bool:
     for row in reversed(rows_to_delete):  # delete from bottom up
         ws_signups.delete_rows(row)
 
+    _cache_invalidate("events:")
+    _cache_invalidate("signups:")
     return True
 
 
@@ -213,11 +255,24 @@ def update_event(name: str, classes: list[str] = None, cars: list[str] = None,
                 ws.update_cell(row, 4, ", ".join(timeslots))
             if deadline is not None:
                 ws.update_cell(row, 5, deadline)
+            _cache_invalidate("events:")
             return True
     return False
 
 
 # ── Signup operations ──
+
+
+def _get_all_signup_records() -> list[dict]:
+    """Fetch all signup records, with caching."""
+    cached = _cache_get("signups:all")
+    if cached is not None:
+        return cached
+    spreadsheet = _safe_spreadsheet()
+    ws = spreadsheet.worksheet("Signups")
+    records = ws.get_all_records()
+    _cache_set("signups:all", records)
+    return records
 
 
 def add_signup(event_name: str, discord_user: str, discord_id: str,
@@ -245,6 +300,7 @@ def add_signup(event_name: str, discord_user: str, discord_id: str,
         preferred_timeslot,
         datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
     ])
+    _cache_invalidate("signups:")
     return True
 
 
@@ -267,6 +323,7 @@ def update_signup(event_name: str, discord_id: str, primary_class: str,
                 preferred_timeslot,
                 datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
             ]])
+            _cache_invalidate("signups:")
             return True
     return False
 
@@ -279,31 +336,26 @@ def cancel_signup(event_name: str, discord_id: str) -> bool:
     for i, record in enumerate(records):
         if record["Event Name"] == event_name and str(record["Discord ID"]) == str(discord_id):
             ws.delete_rows(i + 2)  # +1 for header, +1 for 0-index
+            _cache_invalidate("signups:")
             return True
     return False
 
 
 def get_signups_for_event(event_name: str) -> list[dict]:
     """Get all signups for a specific event."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Signups")
-    records = ws.get_all_records()
+    records = _get_all_signup_records()
     return [r for r in records if r["Event Name"] == event_name]
 
 
 def get_user_signups(discord_id: str) -> list[dict]:
     """Get all signups for a specific user."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Signups")
-    records = ws.get_all_records()
+    records = _get_all_signup_records()
     return [r for r in records if str(r["Discord ID"]) == str(discord_id)]
 
 
 def get_user_signup_for_event(event_name: str, discord_id: str) -> dict | None:
     """Get a specific user's signup for a specific event."""
-    spreadsheet = _safe_spreadsheet()
-    ws = spreadsheet.worksheet("Signups")
-    records = ws.get_all_records()
+    records = _get_all_signup_records()
     for record in records:
         if record["Event Name"] == event_name and str(record["Discord ID"]) == str(discord_id):
             return record
@@ -315,6 +367,9 @@ def get_user_signup_for_event(event_name: str, discord_id: str) -> dict | None:
 
 def get_signup_channels() -> list[int]:
     """Get list of allowed signup channel IDs from Config sheet."""
+    cached = _cache_get("config:signup_channels")
+    if cached is not None:
+        return cached
     try:
         spreadsheet = _safe_spreadsheet()
         ws = spreadsheet.worksheet("Config")
@@ -323,8 +378,11 @@ def get_signup_channels() -> list[int]:
             if record["Key"] == "signup_channels":
                 value = str(record["Value"]).strip()
                 if not value:
-                    return []
-                return [int(ch.strip()) for ch in value.split(",") if ch.strip()]
+                    result = []
+                else:
+                    result = [int(ch.strip()) for ch in value.split(",") if ch.strip()]
+                _cache_set("config:signup_channels", result)
+                return result
     except Exception:
         pass
     return []
@@ -359,6 +417,8 @@ def _save_signup_channels(channels: list[int]):
     for i, record in enumerate(records):
         if record["Key"] == "signup_channels":
             ws.update_cell(i + 2, 2, value)
+            _cache_invalidate("config:")
             return
     # Key doesn't exist yet, add it
     ws.append_row(["signup_channels", value])
+    _cache_invalidate("config:")

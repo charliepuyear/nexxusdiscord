@@ -17,19 +17,17 @@ def _run_sync(func, *args):
     return loop.run_in_executor(None, func, *args)
 
 
-def in_signup_channel():
-    """Check that commands are used in a designated signup channel."""
-    async def predicate(interaction: discord.Interaction) -> bool:
-        allowed = await _run_sync(sheets.get_signup_channels)
-        if allowed and interaction.channel_id not in allowed:
-            channel_mentions = ", ".join(f"<#{ch}>" for ch in allowed)
-            await interaction.response.send_message(
-                f"This command can only be used in: {channel_mentions}",
-                ephemeral=True,
-            )
-            return False
-        return True
-    return app_commands.check(predicate)
+async def _check_signup_channel(interaction: discord.Interaction) -> bool:
+    """Check if we're in a designated signup channel. Call AFTER deferring."""
+    allowed = await _run_sync(sheets.get_signup_channels)
+    if allowed and interaction.channel_id not in allowed:
+        channel_mentions = ", ".join(f"<#{ch}>" for ch in allowed)
+        await interaction.followup.send(
+            f"This command can only be used in: {channel_mentions}",
+            ephemeral=True,
+        )
+        return False
+    return True
 
 
 def is_admin():
@@ -120,8 +118,9 @@ class EventSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         event_name = self.values[0]
 
-        # Defer immediately so Discord knows we're working on it
-        await interaction.response.defer(ephemeral=True)
+        # For signup/edit modes, we need Sheets data before showing next step.
+        # Defer as a message update (not ephemeral) so we can edit the message.
+        await interaction.response.defer()
 
         event = await _run_sync(sheets.get_event, event_name)
         if not event:
@@ -438,7 +437,7 @@ class ConfirmCancelView(discord.ui.View):
 
     @discord.ui.button(label="Yes, cancel my signup", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         success = await _run_sync(sheets.cancel_signup, self.event_name, str(interaction.user.id))
         if success:
             await _remove_event_role(interaction, self.event_name)
@@ -467,10 +466,12 @@ class SignupsCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="signup", description="Sign up for a race event")
-    @in_signup_channel()
     async def signup(self, interaction: discord.Interaction):
-        # Defer immediately — Sheets calls are slow
+        # Defer FIRST, then check channel — avoids 3-second timeout
         await interaction.response.defer(ephemeral=True)
+
+        if not await _check_signup_channel(interaction):
+            return
 
         events = await _run_sync(sheets.get_open_events)
         if not events:
@@ -488,9 +489,11 @@ class SignupsCog(commands.Cog):
         )
 
     @app_commands.command(name="edit-signup", description="Edit your existing signup")
-    @in_signup_channel()
     async def edit_signup(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+
+        if not await _check_signup_channel(interaction):
+            return
 
         user_signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not user_signups:
@@ -522,9 +525,11 @@ class SignupsCog(commands.Cog):
         )
 
     @app_commands.command(name="cancel-signup", description="Cancel your signup for an event")
-    @in_signup_channel()
     async def cancel_signup(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+
+        if not await _check_signup_channel(interaction):
+            return
 
         user_signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not user_signups:
@@ -542,9 +547,11 @@ class SignupsCog(commands.Cog):
         )
 
     @app_commands.command(name="my-signups", description="View your current signups")
-    @in_signup_channel()
     async def my_signups(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+
+        if not await _check_signup_channel(interaction):
+            return
 
         signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not signups:
@@ -574,9 +581,11 @@ class SignupsCog(commands.Cog):
 
     @app_commands.command(name="view-signups", description="View all signups for an event")
     @app_commands.describe(event_name="Name of the event")
-    @in_signup_channel()
     async def view_signups(self, interaction: discord.Interaction, event_name: str):
         await interaction.response.defer()
+
+        if not await _check_signup_channel(interaction):
+            return
 
         signups = await _run_sync(sheets.get_signups_for_event, event_name)
         if not signups:
