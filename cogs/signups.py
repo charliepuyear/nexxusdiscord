@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import csv
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -204,8 +205,10 @@ class TimeslotSelectView(discord.ui.View):
         print(f"DEBUG timeslots raw value: type={type(raw_timeslots).__name__}, repr={repr(raw_timeslots)}")
         # gspread may return int 0 for empty cells — always convert to string
         raw_str = str(raw_timeslots).strip()
-        # Filter out empty strings and "0" (gspread empty cell artifact)
-        timeslot_strs = [s.strip()[:100] for s in raw_str.split(",") if s.strip() and s.strip() != "0"]
+        # Split on commas OR newlines to handle both input styles
+        parts = re.split(r"[,\n]+", raw_str)
+        # Filter out empty strings and "0" (gspread empty cell artifact), truncate to 100 chars
+        timeslot_strs = [s.strip()[:100] for s in parts if s.strip() and s.strip() != "0"]
 
         if not timeslot_strs:
             # Fallback to default timeslots if none found

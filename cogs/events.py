@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -69,7 +70,8 @@ class CreateEventModal(discord.ui.Modal, title="Create Race Event"):
         car_list = [c.strip() for c in self.cars.value.split(",") if c.strip()]
 
         if self.timeslots.value and self.timeslots.value.strip():
-            slot_list = [s.strip() for s in self.timeslots.value.split(",") if s.strip()]
+            # Split on commas or newlines so admins can use either format
+            slot_list = [s.strip() for s in re.split(r"[,\n]+", self.timeslots.value) if s.strip()]
         else:
             slot_list = DEFAULT_TIMESLOTS
 
@@ -125,7 +127,7 @@ class EditEventModal(discord.ui.Modal, title="Edit Race Event"):
             max_length=1000,
         )
         self.timeslots = discord.ui.TextInput(
-            label="Timeslots (comma-separated)",
+            label="Timeslots (comma or newline)",
             default=event["Timeslots"],
             style=discord.TextStyle.paragraph,
             max_length=1000,
@@ -146,7 +148,7 @@ class EditEventModal(discord.ui.Modal, title="Edit Race Event"):
 
         class_list = [c.strip() for c in self.classes.value.split(",") if c.strip()]
         car_list = [c.strip() for c in self.cars.value.split(",") if c.strip()]
-        slot_list = [s.strip() for s in self.timeslots.value.split(",") if s.strip()]
+        slot_list = [s.strip() for s in re.split(r"[,\n]+", self.timeslots.value) if s.strip()]
         deadline = self.deadline.value.strip() if self.deadline.value else "None"
 
         try:
