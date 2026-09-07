@@ -1,6 +1,7 @@
 """Signup commands — users sign up, edit, cancel, and view race signups."""
 from __future__ import annotations
 
+import asyncio
 import io
 import csv
 import discord
@@ -10,10 +11,16 @@ from config import ADMIN_ROLE
 import sheets
 
 
+def _run_sync(func, *args):
+    """Run a blocking function in a thread so it doesn't block the event loop."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, func, *args)
+
+
 def in_signup_channel():
     """Check that commands are used in a designated signup channel."""
     async def predicate(interaction: discord.Interaction) -> bool:
-        allowed = sheets.get_signup_channels()
+        allowed = await _run_sync(sheets.get_signup_channels)
         if allowed and interaction.channel_id not in allowed:
             channel_mentions = ", ".join(f"<#{ch}>" for ch in allowed)
             await interaction.response.send_message(
@@ -112,15 +119,19 @@ class EventSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         event_name = self.values[0]
-        event = sheets.get_event(event_name)
+
+        # Defer immediately so Discord knows we're working on it
+        await interaction.response.defer(ephemeral=True)
+
+        event = await _run_sync(sheets.get_event, event_name)
         if not event:
-            await interaction.response.send_message("Event not found.", ephemeral=True)
+            await interaction.followup.send("Event not found.", ephemeral=True)
             return
 
         if self.mode == "signup":
-            existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
+            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
             if existing:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"You're already signed up for **{event_name}**. "
                     f"Use `/edit-signup` to change your signup.",
                     ephemeral=True,
@@ -128,34 +139,34 @@ class EventSelect(discord.ui.Select):
                 return
             # Step 2: Show timeslot selection
             view = TimeslotSelectView(event, interaction.user.id, mode="signup")
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"**{event_name}** — Select your available timeslots:",
                 view=view,
             )
 
         elif self.mode == "edit":
-            existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
+            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
             if not existing:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"You don't have a signup for **{event_name}**.",
                     ephemeral=True,
                 )
                 return
             view = TimeslotSelectView(event, interaction.user.id, mode="edit", existing=existing)
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"**{event_name}** — Update your available timeslots:",
                 view=view,
             )
 
         elif self.mode == "cancel":
-            existing = sheets.get_user_signup_for_event(event_name, str(interaction.user.id))
+            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
             if not existing:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"You don't have a signup for **{event_name}**.",
                     ephemeral=True,
                 )
                 return
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"Are you sure you want to cancel your signup for **{event_name}**?",
                 view=ConfirmCancelView(event_name, interaction.user.id),
             )
@@ -295,25 +306,29 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
         self.add_item(self.cars_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Defer so the Sheets write doesn't time us out
+        await interaction.response.defer()
+
         try:
-            success = sheets.add_signup(
-                event_name=self.event_name,
-                discord_user=interaction.user.display_name,
-                discord_id=str(interaction.user.id),
-                primary_class=self.primary_class.value.strip(),
-                secondary_class=self.secondary_class.value.strip() if self.secondary_class.value else "None",
-                cars=self.cars_input.value.strip(),
-                available_timeslots=self.available_timeslots,
-                preferred_timeslot=self.preferred_timeslot,
+            success = await _run_sync(
+                sheets.add_signup,
+                self.event_name,
+                interaction.user.display_name,
+                str(interaction.user.id),
+                self.primary_class.value.strip(),
+                self.secondary_class.value.strip() if self.secondary_class.value else "None",
+                self.cars_input.value.strip(),
+                self.available_timeslots,
+                self.preferred_timeslot,
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Error saving signup: {e}", ephemeral=True,
             )
             return
 
         if not success:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You're already signed up for **{self.event_name}**.",
                 ephemeral=True,
             )
@@ -334,7 +349,7 @@ class SignupModal(discord.ui.Modal, title="Race Signup"):
         embed.add_field(name="Available Slots", value=self.available_timeslots, inline=False)
         embed.add_field(name="Preferred Slot", value=self.preferred_timeslot, inline=True)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 # ── Edit signup modal ──
@@ -375,18 +390,21 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
         self.add_item(self.cars_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
         try:
-            sheets.update_signup(
-                event_name=self.event_name,
-                discord_id=str(interaction.user.id),
-                primary_class=self.primary_class.value.strip(),
-                secondary_class=self.secondary_class.value.strip() if self.secondary_class.value else "None",
-                cars=self.cars_input.value.strip(),
-                available_timeslots=self.available_timeslots,
-                preferred_timeslot=self.preferred_timeslot,
+            await _run_sync(
+                sheets.update_signup,
+                self.event_name,
+                str(interaction.user.id),
+                self.primary_class.value.strip(),
+                self.secondary_class.value.strip() if self.secondary_class.value else "None",
+                self.cars_input.value.strip(),
+                self.available_timeslots,
+                self.preferred_timeslot,
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Error updating signup: {e}", ephemeral=True,
             )
             return
@@ -403,7 +421,7 @@ class EditSignupModal(discord.ui.Modal, title="Edit Your Signup"):
         embed.add_field(name="Available Slots", value=self.available_timeslots, inline=False)
         embed.add_field(name="Preferred Slot", value=self.preferred_timeslot, inline=True)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 # ── Cancel confirmation ──
@@ -420,15 +438,16 @@ class ConfirmCancelView(discord.ui.View):
 
     @discord.ui.button(label="Yes, cancel my signup", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        success = sheets.cancel_signup(self.event_name, str(interaction.user.id))
+        await interaction.response.defer(ephemeral=True)
+        success = await _run_sync(sheets.cancel_signup, self.event_name, str(interaction.user.id))
         if success:
             await _remove_event_role(interaction, self.event_name)
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"Your signup for **{self.event_name}** has been cancelled.",
                 view=None,
             )
         else:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content="Could not find your signup to cancel.",
                 view=None,
             )
@@ -450,16 +469,19 @@ class SignupsCog(commands.Cog):
     @app_commands.command(name="signup", description="Sign up for a race event")
     @in_signup_channel()
     async def signup(self, interaction: discord.Interaction):
-        events = sheets.get_open_events()
+        # Defer immediately — Sheets calls are slow
+        await interaction.response.defer(ephemeral=True)
+
+        events = await _run_sync(sheets.get_open_events)
         if not events:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "There are no open events to sign up for right now.",
                 ephemeral=True,
             )
             return
 
         view = EventSelectView(events, interaction.user.id, mode="signup")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Select the event you want to sign up for:",
             view=view,
             ephemeral=True,
@@ -468,14 +490,16 @@ class SignupsCog(commands.Cog):
     @app_commands.command(name="edit-signup", description="Edit your existing signup")
     @in_signup_channel()
     async def edit_signup(self, interaction: discord.Interaction):
-        user_signups = sheets.get_user_signups(str(interaction.user.id))
+        await interaction.response.defer(ephemeral=True)
+
+        user_signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not user_signups:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You don't have any active signups.", ephemeral=True,
             )
             return
 
-        open_events = sheets.get_open_events()
+        open_events = await _run_sync(sheets.get_open_events)
         open_event_names = {e["Event Name"] for e in open_events}
         signed_up_events = [
             {"Event Name": s["Event Name"]}
@@ -484,14 +508,14 @@ class SignupsCog(commands.Cog):
         ]
 
         if not signed_up_events:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You have no editable signups (events may be closed).",
                 ephemeral=True,
             )
             return
 
         view = EventSelectView(signed_up_events, interaction.user.id, mode="edit")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Select the event signup you want to edit:",
             view=view,
             ephemeral=True,
@@ -500,16 +524,18 @@ class SignupsCog(commands.Cog):
     @app_commands.command(name="cancel-signup", description="Cancel your signup for an event")
     @in_signup_channel()
     async def cancel_signup(self, interaction: discord.Interaction):
-        user_signups = sheets.get_user_signups(str(interaction.user.id))
+        await interaction.response.defer(ephemeral=True)
+
+        user_signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not user_signups:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You don't have any active signups.", ephemeral=True,
             )
             return
 
         events = [{"Event Name": s["Event Name"]} for s in user_signups]
         view = EventSelectView(events, interaction.user.id, mode="cancel")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Select the event signup you want to cancel:",
             view=view,
             ephemeral=True,
@@ -518,9 +544,11 @@ class SignupsCog(commands.Cog):
     @app_commands.command(name="my-signups", description="View your current signups")
     @in_signup_channel()
     async def my_signups(self, interaction: discord.Interaction):
-        signups = sheets.get_user_signups(str(interaction.user.id))
+        await interaction.response.defer(ephemeral=True)
+
+        signups = await _run_sync(sheets.get_user_signups, str(interaction.user.id))
         if not signups:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You don't have any signups.", ephemeral=True,
             )
             return
@@ -542,15 +570,17 @@ class SignupsCog(commands.Cog):
                 inline=False,
             )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="view-signups", description="View all signups for an event")
     @app_commands.describe(event_name="Name of the event")
     @in_signup_channel()
     async def view_signups(self, interaction: discord.Interaction, event_name: str):
-        signups = sheets.get_signups_for_event(event_name)
+        await interaction.response.defer()
+
+        signups = await _run_sync(sheets.get_signups_for_event, event_name)
         if not signups:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"No signups found for **{event_name}**.", ephemeral=True,
             )
             return
@@ -572,11 +602,11 @@ class SignupsCog(commands.Cog):
                 inline=True,
             )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @view_signups.autocomplete("event_name")
     async def view_signups_autocomplete(self, interaction: discord.Interaction, current: str):
-        events = sheets.get_all_events()
+        events = await _run_sync(sheets.get_all_events)
         return [
             app_commands.Choice(name=e["Event Name"], value=e["Event Name"])
             for e in events
@@ -587,9 +617,11 @@ class SignupsCog(commands.Cog):
     @app_commands.describe(event_name="Name of the event to export")
     @is_admin()
     async def export_signups(self, interaction: discord.Interaction, event_name: str):
-        signups = sheets.get_signups_for_event(event_name)
+        await interaction.response.defer(ephemeral=True)
+
+        signups = await _run_sync(sheets.get_signups_for_event, event_name)
         if not signups:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"No signups found for **{event_name}**.", ephemeral=True,
             )
             return
@@ -604,14 +636,14 @@ class SignupsCog(commands.Cog):
         filename = f"{event_name.replace(' ', '_')}_signups.csv"
         file = discord.File(io.BytesIO(output.getvalue().encode()), filename=filename)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Signups for **{event_name}** ({len(signups)} drivers):",
             file=file,
         )
 
     @export_signups.autocomplete("event_name")
     async def export_signups_autocomplete(self, interaction: discord.Interaction, current: str):
-        events = sheets.get_all_events()
+        events = await _run_sync(sheets.get_all_events)
         return [
             app_commands.Choice(name=e["Event Name"], value=e["Event Name"])
             for e in events

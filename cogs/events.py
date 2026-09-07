@@ -1,11 +1,18 @@
 """Admin commands for managing race events."""
 from __future__ import annotations
 
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
 from config import ADMIN_ROLE, DEFAULT_TIMESLOTS
 import sheets
+
+
+def _run_sync(func, *args):
+    """Run a blocking function in a thread so it doesn't block the event loop."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, func, *args)
 
 
 def is_admin():
@@ -54,6 +61,9 @@ class CreateEventModal(discord.ui.Modal, title="Create Race Event"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Defer so the Sheets write doesn't time us out
+        await interaction.response.defer()
+
         name = self.event_name.value.strip()
         class_list = [c.strip() for c in self.classes.value.split(",") if c.strip()]
         car_list = [c.strip() for c in self.cars.value.split(",") if c.strip()]
@@ -66,22 +76,19 @@ class CreateEventModal(discord.ui.Modal, title="Create Race Event"):
         deadline = self.deadline.value.strip() if self.deadline.value else "None"
 
         try:
-            success = sheets.add_event(
-                name=name,
-                classes=class_list,
-                cars=car_list,
-                timeslots=slot_list,
-                deadline=deadline,
-                created_by=str(interaction.user),
+            success = await _run_sync(
+                sheets.add_event,
+                name, class_list, car_list, slot_list, deadline,
+                str(interaction.user),
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Error creating event: {e}", ephemeral=True,
             )
             return
 
         if not success:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"An event named **{name}** already exists.", ephemeral=True,
             )
             return
@@ -98,7 +105,7 @@ class CreateEventModal(discord.ui.Modal, title="Create Race Event"):
             embed.add_field(name="Signup Deadline", value=deadline, inline=False)
         embed.set_footer(text=f"Created by {interaction.user.display_name}")
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 class EditEventModal(discord.ui.Modal, title="Edit Race Event"):
@@ -135,21 +142,20 @@ class EditEventModal(discord.ui.Modal, title="Edit Race Event"):
         self.add_item(self.deadline)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
         class_list = [c.strip() for c in self.classes.value.split(",") if c.strip()]
         car_list = [c.strip() for c in self.cars.value.split(",") if c.strip()]
         slot_list = [s.strip() for s in self.timeslots.value.split(",") if s.strip()]
         deadline = self.deadline.value.strip() if self.deadline.value else "None"
 
         try:
-            sheets.update_event(
-                name=self.event_name,
-                classes=class_list,
-                cars=car_list,
-                timeslots=slot_list,
-                deadline=deadline,
+            await _run_sync(
+                sheets.update_event,
+                self.event_name, class_list, car_list, slot_list, deadline,
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Error updating event: {e}", ephemeral=True,
             )
             return
@@ -164,7 +170,7 @@ class EditEventModal(discord.ui.Modal, title="Edit Race Event"):
         embed.add_field(name="Timeslots", value="\n".join(f"• {s}" for s in slot_list), inline=False)
         embed.add_field(name="Deadline", value=deadline, inline=False)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 class EventsCog(commands.Cog):
@@ -180,7 +186,7 @@ class EventsCog(commands.Cog):
     @app_commands.describe(event_name="Name of the event to edit")
     @is_admin()
     async def edit_event(self, interaction: discord.Interaction, event_name: str):
-        event = sheets.get_event(event_name)
+        event = await _run_sync(sheets.get_event, event_name)
         if not event:
             await interaction.response.send_message(
                 f"Event **{event_name}** not found.", ephemeral=True,
@@ -190,7 +196,7 @@ class EventsCog(commands.Cog):
 
     @edit_event.autocomplete("event_name")
     async def edit_event_autocomplete(self, interaction: discord.Interaction, current: str):
-        events = sheets.get_all_events()
+        events = await _run_sync(sheets.get_all_events)
         return [
             app_commands.Choice(name=e["Event Name"], value=e["Event Name"])
             for e in events
@@ -201,7 +207,9 @@ class EventsCog(commands.Cog):
     @app_commands.describe(event_name="Name of the event to close")
     @is_admin()
     async def close_event(self, interaction: discord.Interaction, event_name: str):
-        success = sheets.close_event(event_name)
+        await interaction.response.defer()
+
+        success = await _run_sync(sheets.close_event, event_name)
         if success:
             # Remove the event role from the server
             role_name = f"Event: {event_name}"
@@ -216,15 +224,15 @@ class EventsCog(commands.Cog):
                 description=f"Signups for **{event_name}** are now closed.",
                 color=discord.Color.red(),
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Event **{event_name}** not found.", ephemeral=True,
             )
 
     @close_event.autocomplete("event_name")
     async def close_event_autocomplete(self, interaction: discord.Interaction, current: str):
-        events = sheets.get_open_events()
+        events = await _run_sync(sheets.get_open_events)
         return [
             app_commands.Choice(name=e["Event Name"], value=e["Event Name"])
             for e in events
@@ -235,7 +243,9 @@ class EventsCog(commands.Cog):
     @app_commands.describe(event_name="Name of the event to delete")
     @is_admin()
     async def delete_event(self, interaction: discord.Interaction, event_name: str):
-        success = sheets.delete_event(event_name)
+        await interaction.response.defer()
+
+        success = await _run_sync(sheets.delete_event, event_name)
         if success:
             # Remove the event role from the server
             role_name = f"Event: {event_name}"
@@ -245,17 +255,17 @@ class EventsCog(commands.Cog):
                     await role.delete(reason=f"Event deleted: {event_name}")
                 except discord.Forbidden:
                     pass
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Event **{event_name}** and all associated signups have been deleted.",
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Event **{event_name}** not found.", ephemeral=True,
             )
 
     @delete_event.autocomplete("event_name")
     async def delete_event_autocomplete(self, interaction: discord.Interaction, current: str):
-        events = sheets.get_all_events()
+        events = await _run_sync(sheets.get_all_events)
         return [
             app_commands.Choice(name=e["Event Name"], value=e["Event Name"])
             for e in events
@@ -264,9 +274,11 @@ class EventsCog(commands.Cog):
 
     @app_commands.command(name="list-events", description="List all race events")
     async def list_events(self, interaction: discord.Interaction):
-        events = sheets.get_all_events()
+        await interaction.response.defer()
+
+        events = await _run_sync(sheets.get_all_events)
         if not events:
-            await interaction.response.send_message("No events found.", ephemeral=True)
+            await interaction.followup.send("No events found.", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -282,45 +294,51 @@ class EventsCog(commands.Cog):
                 inline=False,
             )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="setup-sheets", description="Initialize Google Sheets worksheets (Admin only)")
     @is_admin()
     async def setup_sheets(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         try:
-            sheets.ensure_worksheets()
-            await interaction.response.send_message(
+            await _run_sync(sheets.ensure_worksheets)
+            await interaction.followup.send(
                 "Google Sheets worksheets have been set up successfully!",
                 ephemeral=True,
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Error setting up sheets: {e}", ephemeral=True,
             )
 
     @app_commands.command(name="add-signup-channel", description="Allow signups in this channel (Admin only)")
     @is_admin()
     async def add_signup_channel(self, interaction: discord.Interaction):
-        success = sheets.add_signup_channel(interaction.channel_id)
+        await interaction.response.defer()
+
+        success = await _run_sync(sheets.add_signup_channel, interaction.channel_id)
         if success:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"This channel is now a signup channel.",
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This channel is already a signup channel.", ephemeral=True,
             )
 
     @app_commands.command(name="remove-signup-channel", description="Remove this channel from signup channels (Admin only)")
     @is_admin()
     async def remove_signup_channel(self, interaction: discord.Interaction):
-        success = sheets.remove_signup_channel(interaction.channel_id)
+        await interaction.response.defer()
+
+        success = await _run_sync(sheets.remove_signup_channel, interaction.channel_id)
         if success:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"This channel is no longer a signup channel.",
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This channel isn't a signup channel.", ephemeral=True,
             )
 

@@ -1,10 +1,17 @@
 """Automatic reminders and deadline-based event closing."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 import discord
 from discord.ext import commands, tasks
 import sheets
+
+
+def _run_sync(func, *args):
+    """Run a blocking function in a thread so it doesn't block the event loop."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, func, *args)
 
 
 class RemindersCog(commands.Cog):
@@ -18,7 +25,7 @@ class RemindersCog(commands.Cog):
     @tasks.loop(minutes=30)
     async def check_deadlines(self):
         """Check for approaching deadlines and auto-close expired events."""
-        channel_ids = sheets.get_signup_channels()
+        channel_ids = await _run_sync(sheets.get_signup_channels)
         if not channel_ids:
             return
 
@@ -28,7 +35,7 @@ class RemindersCog(commands.Cog):
             return
 
         now = datetime.utcnow()
-        open_events = sheets.get_open_events()
+        open_events = await _run_sync(sheets.get_open_events)
 
         for event in open_events:
             deadline_str = str(event.get("Deadline", "None"))
@@ -44,8 +51,8 @@ class RemindersCog(commands.Cog):
 
             # Auto-close if deadline has passed
             if now >= deadline:
-                sheets.close_event(event_name)
-                signups = sheets.get_signups_for_event(event_name)
+                await _run_sync(sheets.close_event, event_name)
+                signups = await _run_sync(sheets.get_signups_for_event, event_name)
                 embed = discord.Embed(
                     title="Signups Closed",
                     description=(
@@ -61,7 +68,7 @@ class RemindersCog(commands.Cog):
             # 24-hour reminder
             time_left = deadline - now
             if timedelta(hours=23, minutes=30) <= time_left <= timedelta(hours=24, minutes=30):
-                signups = sheets.get_signups_for_event(event_name)
+                signups = await _run_sync(sheets.get_signups_for_event, event_name)
                 embed = discord.Embed(
                     title="Signup Reminder - 24 Hours Left!",
                     description=(
@@ -76,7 +83,7 @@ class RemindersCog(commands.Cog):
 
             # 1-hour reminder
             elif timedelta(minutes=30) <= time_left <= timedelta(hours=1, minutes=30):
-                signups = sheets.get_signups_for_event(event_name)
+                signups = await _run_sync(sheets.get_signups_for_event, event_name)
                 embed = discord.Embed(
                     title="LAST CALL - Signups Closing Soon!",
                     description=(

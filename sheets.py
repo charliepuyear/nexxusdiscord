@@ -23,13 +23,21 @@ SIGNUP_HEADERS = [
     "Signed Up At",
 ]
 
+# ── Cached client ──
+
+_client: gspread.Client | None = None
+
 
 def get_client() -> gspread.Client:
-    """Authenticate and return a gspread client.
+    """Authenticate and return a cached gspread client.
 
     Supports either a credentials JSON file or a GOOGLE_CREDENTIALS_JSON
     environment variable containing the JSON string directly.
     """
+    global _client
+    if _client is not None:
+        return _client
+
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
         info = json.loads(creds_json)
@@ -38,7 +46,8 @@ def get_client() -> gspread.Client:
         creds = Credentials.from_service_account_file(
             GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
         )
-    return gspread.authorize(creds)
+    _client = gspread.authorize(creds)
+    return _client
 
 
 def get_spreadsheet() -> gspread.Spreadsheet:
@@ -47,9 +56,27 @@ def get_spreadsheet() -> gspread.Spreadsheet:
     return client.open_by_key(GOOGLE_SHEET_ID)
 
 
+def _refresh_client():
+    """Force re-authentication (e.g. on token expiry)."""
+    global _client
+    _client = None
+    return get_client()
+
+
+def _safe_spreadsheet() -> gspread.Spreadsheet:
+    """Get spreadsheet, refreshing credentials once on auth error."""
+    try:
+        return get_spreadsheet()
+    except gspread.exceptions.APIError as e:
+        if "401" in str(e) or "403" in str(e):
+            _refresh_client()
+            return get_spreadsheet()
+        raise
+
+
 def ensure_worksheets():
     """Create the Events, Signups, and Config worksheets if they don't exist."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     existing = [ws.title for ws in spreadsheet.worksheets()]
 
     if "Events" not in existing:
@@ -82,7 +109,7 @@ def ensure_worksheets():
 def add_event(name: str, classes: list[str], cars: list[str],
               timeslots: list[str], deadline: str, created_by: str) -> bool:
     """Add a new event. Returns False if event name already exists."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
 
     # Check for duplicate name
@@ -106,7 +133,7 @@ def add_event(name: str, classes: list[str], cars: list[str],
 
 def get_event(name: str) -> dict | None:
     """Get an event by name."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
     records = ws.get_all_records()
     for record in records:
@@ -117,7 +144,7 @@ def get_event(name: str) -> dict | None:
 
 def get_open_events() -> list[dict]:
     """Get all events with status 'Open'."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
     records = ws.get_all_records()
     return [r for r in records if r["Status"] == "Open"]
@@ -125,14 +152,14 @@ def get_open_events() -> list[dict]:
 
 def get_all_events() -> list[dict]:
     """Get all events."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
     return ws.get_all_records()
 
 
 def close_event(name: str) -> bool:
     """Close an event (no more signups). Returns False if not found."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
     events = ws.col_values(1)
     for i, event_name in enumerate(events):
@@ -144,7 +171,7 @@ def close_event(name: str) -> bool:
 
 def delete_event(name: str) -> bool:
     """Delete an event and all its signups."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
 
     # Delete from Events sheet
     ws_events = spreadsheet.worksheet("Events")
@@ -172,7 +199,7 @@ def delete_event(name: str) -> bool:
 def update_event(name: str, classes: list[str] = None, cars: list[str] = None,
                  timeslots: list[str] = None, deadline: str = None) -> bool:
     """Update event fields. Returns False if not found."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Events")
     events = ws.col_values(1)
     for i, event_name in enumerate(events):
@@ -197,7 +224,7 @@ def add_signup(event_name: str, discord_user: str, discord_id: str,
                primary_class: str, secondary_class: str, cars: str,
                available_timeslots: str, preferred_timeslot: str) -> bool:
     """Add a signup. Returns False if user already signed up for this event."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
 
     # Check for existing signup
@@ -225,7 +252,7 @@ def update_signup(event_name: str, discord_id: str, primary_class: str,
                   secondary_class: str, cars: str, available_timeslots: str,
                   preferred_timeslot: str) -> bool:
     """Update an existing signup. Returns False if not found."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
     records = ws.get_all_records()
     for i, record in enumerate(records):
@@ -246,7 +273,7 @@ def update_signup(event_name: str, discord_id: str, primary_class: str,
 
 def cancel_signup(event_name: str, discord_id: str) -> bool:
     """Cancel a signup. Returns False if not found."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
     records = ws.get_all_records()
     for i, record in enumerate(records):
@@ -258,7 +285,7 @@ def cancel_signup(event_name: str, discord_id: str) -> bool:
 
 def get_signups_for_event(event_name: str) -> list[dict]:
     """Get all signups for a specific event."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
     records = ws.get_all_records()
     return [r for r in records if r["Event Name"] == event_name]
@@ -266,7 +293,7 @@ def get_signups_for_event(event_name: str) -> list[dict]:
 
 def get_user_signups(discord_id: str) -> list[dict]:
     """Get all signups for a specific user."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
     records = ws.get_all_records()
     return [r for r in records if str(r["Discord ID"]) == str(discord_id)]
@@ -274,7 +301,7 @@ def get_user_signups(discord_id: str) -> list[dict]:
 
 def get_user_signup_for_event(event_name: str, discord_id: str) -> dict | None:
     """Get a specific user's signup for a specific event."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Signups")
     records = ws.get_all_records()
     for record in records:
@@ -289,7 +316,7 @@ def get_user_signup_for_event(event_name: str, discord_id: str) -> dict | None:
 def get_signup_channels() -> list[int]:
     """Get list of allowed signup channel IDs from Config sheet."""
     try:
-        spreadsheet = get_spreadsheet()
+        spreadsheet = _safe_spreadsheet()
         ws = spreadsheet.worksheet("Config")
         records = ws.get_all_records()
         for record in records:
@@ -325,7 +352,7 @@ def remove_signup_channel(channel_id: int) -> bool:
 
 def _save_signup_channels(channels: list[int]):
     """Save the signup channels list to the Config sheet."""
-    spreadsheet = get_spreadsheet()
+    spreadsheet = _safe_spreadsheet()
     ws = spreadsheet.worksheet("Config")
     records = ws.get_all_records()
     value = ", ".join(str(ch) for ch in channels)
