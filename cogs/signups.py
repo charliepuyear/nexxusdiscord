@@ -118,57 +118,71 @@ class EventSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         event_name = self.values[0]
 
-        # For signup/edit modes, we need Sheets data before showing next step.
-        # Defer as a message update (not ephemeral) so we can edit the message.
-        await interaction.response.defer()
-
-        event = await _run_sync(sheets.get_event, event_name)
-        if not event:
-            await interaction.followup.send("Event not found.", ephemeral=True)
-            return
-
-        if self.mode == "signup":
-            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
-            if existing:
-                await interaction.followup.send(
-                    f"You're already signed up for **{event_name}**. "
-                    f"Use `/edit-signup` to change your signup.",
-                    ephemeral=True,
-                )
-                return
-            # Step 2: Show timeslot selection
-            view = TimeslotSelectView(event, interaction.user.id, mode="signup")
-            await interaction.edit_original_response(
-                content=f"**{event_name}** — Select your available timeslots:",
-                view=view,
+        try:
+            # Immediately acknowledge by editing the message (correct for components)
+            await interaction.response.edit_message(
+                content=f"⏳ Loading **{event_name}**...",
+                view=None,
             )
 
-        elif self.mode == "edit":
-            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
-            if not existing:
-                await interaction.followup.send(
-                    f"You don't have a signup for **{event_name}**.",
-                    ephemeral=True,
+            event = await _run_sync(sheets.get_event, event_name)
+            if not event:
+                await interaction.edit_original_response(
+                    content="Event not found.", view=None,
                 )
                 return
-            view = TimeslotSelectView(event, interaction.user.id, mode="edit", existing=existing)
-            await interaction.edit_original_response(
-                content=f"**{event_name}** — Update your available timeslots:",
-                view=view,
-            )
 
-        elif self.mode == "cancel":
-            existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
-            if not existing:
-                await interaction.followup.send(
-                    f"You don't have a signup for **{event_name}**.",
-                    ephemeral=True,
+            if self.mode == "signup":
+                existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
+                if existing:
+                    await interaction.edit_original_response(
+                        content=f"You're already signed up for **{event_name}**. "
+                        f"Use `/edit-signup` to change your signup.",
+                        view=None,
+                    )
+                    return
+                # Step 2: Show timeslot selection
+                view = TimeslotSelectView(event, interaction.user.id, mode="signup")
+                await interaction.edit_original_response(
+                    content=f"**{event_name}** — Select your available timeslots:",
+                    view=view,
                 )
-                return
-            await interaction.edit_original_response(
-                content=f"Are you sure you want to cancel your signup for **{event_name}**?",
-                view=ConfirmCancelView(event_name, interaction.user.id),
-            )
+
+            elif self.mode == "edit":
+                existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
+                if not existing:
+                    await interaction.edit_original_response(
+                        content=f"You don't have a signup for **{event_name}**.",
+                        view=None,
+                    )
+                    return
+                view = TimeslotSelectView(event, interaction.user.id, mode="edit", existing=existing)
+                await interaction.edit_original_response(
+                    content=f"**{event_name}** — Update your available timeslots:",
+                    view=view,
+                )
+
+            elif self.mode == "cancel":
+                existing = await _run_sync(sheets.get_user_signup_for_event, event_name, str(interaction.user.id))
+                if not existing:
+                    await interaction.edit_original_response(
+                        content=f"You don't have a signup for **{event_name}**.",
+                        view=None,
+                    )
+                    return
+                await interaction.edit_original_response(
+                    content=f"Are you sure you want to cancel your signup for **{event_name}**?",
+                    view=ConfirmCancelView(event_name, interaction.user.id),
+                )
+
+        except Exception as e:
+            print(f"EventSelect callback error: {e}")
+            try:
+                await interaction.edit_original_response(
+                    content=f"Something went wrong: {e}", view=None,
+                )
+            except Exception:
+                pass
 
 
 # ── Step 2: Timeslot selection via dropdowns ──
